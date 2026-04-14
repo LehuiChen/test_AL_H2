@@ -1,0 +1,9 @@
+# H2 harmonic data for tutorial AL reproduction
+# Source: official MLatom tutorial h2_freq.json
+# Units: bond_length in angstrom, frequency in cm^-1,
+# reduced_mass in amu, force_constant in mDyne/angstrom, energies in hartree
+bond_length=0.742787543610
+frequency_cm-1=4452.746126079
+reduced_mass_amu=1.008
+force_constant_mdyne_per_angstrom=11.775155045213
+zpe_hartree=0.010144102084705132
