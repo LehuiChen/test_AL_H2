@@ -116,6 +116,7 @@ def _load_config(config_path: str, project_root: pathlib.Path) -> Dict[str, Any]
     payload.setdefault("reference", {})
     payload.setdefault("training", {})
     payload.setdefault("active_learning", {})
+    payload.setdefault("uncertainty", {})
     payload.setdefault("cluster", {})
     payload["_config_file"] = str(path)
     payload["_project_root"] = str(project_root.resolve())
@@ -268,6 +269,7 @@ def _run_ani_al(
     reference_method: Any,
     run_dir: pathlib.Path,
     al_cfg: Dict[str, Any],
+    uncertainty_cfg: Dict[str, Any],
     sampled_points: int,
     device: Optional[str],
     debug: bool,
@@ -283,6 +285,15 @@ def _run_ani_al(
     time_step = _require_float(al_cfg.get("time_step", 0.1), "active_learning.time_step")
     label_nthreads = _require_int(al_cfg.get("label_nthreads", 4), "active_learning.label_nthreads")
     initial_points_refinement = str(al_cfg.get("initial_points_refinement", "cross-validation"))
+    committee_size = _require_int(uncertainty_cfg.get("committee_size", 2), "uncertainty.committee_size")
+    uq_metric = str(uncertainty_cfg.get("metric", "energy_forces"))
+    energy_weight = _require_float(uncertainty_cfg.get("energy_weight", 1.0), "uncertainty.energy_weight")
+    force_weight = _require_float(uncertainty_cfg.get("force_weight", 1.0), "uncertainty.force_weight")
+    uq_threshold_raw = uncertainty_cfg.get("uq_threshold")
+    uq_threshold: Optional[float] = None
+    if uq_threshold_raw is not None:
+        uq_threshold = _require_float(uq_threshold_raw, "uncertainty.uq_threshold")
+    committee_size = max(2, committee_size)
 
     if device is not None:
         device = str(device)
@@ -290,9 +301,17 @@ def _run_ani_al(
     model_dir = run_dir / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
     model_file = model_dir / "ani_main_model.pt"
+    aux_model_files = [model_dir / ("ani_aux_model_%02d.pt" % idx) for idx in range(1, committee_size)]
     model_kwargs: Dict[str, Any] = {"model_file": str(model_file)}
     if device:
         model_kwargs["device"] = device
+    aux_model_kwargs_list: List[Dict[str, Any]] = []
+    for aux_path in aux_model_files:
+        aux_kwargs: Dict[str, Any] = {"model_file": str(aux_path)}
+        if device:
+            aux_kwargs["device"] = device
+        aux_model_kwargs_list.append(aux_kwargs)
+    primary_aux_model_kwargs = aux_model_kwargs_list[0] if aux_model_kwargs_list else dict(model_kwargs)
 
     initdata_sampler_kwargs = {
         "molecule": eq_molecule,
@@ -304,6 +323,19 @@ def _run_ani_al(
         "number_of_initial_conditions": sampled_points,
         "initial_temperature": initial_temperature,
     }
+    sampler_kwargs: Dict[str, Any] = {
+        "initcond_sampler": "wigner",
+        "initcond_sampler_kwargs": sampling_pool_kwargs,
+        "maximum_propagation_time": max_prop_time,
+        "time_step": time_step,
+        "max_excess": max_excess,
+        "min_excess": min_excess,
+        "uq_metric": uq_metric,
+        "energy_weight": energy_weight,
+        "force_weight": force_weight,
+    }
+    if uq_threshold is not None:
+        sampler_kwargs["uq_threshold"] = uq_threshold
 
     base_kwargs: Dict[str, Any] = {
         "reference_method": reference_method,
@@ -312,23 +344,54 @@ def _run_ani_al(
         "initdata_sampler_kwargs": initdata_sampler_kwargs,
         "initial_points_refinement": initial_points_refinement,
         "sampler": "batch_md",
-        "sampler_kwargs": {
-            "initcond_sampler": "wigner",
-            "initcond_sampler_kwargs": sampling_pool_kwargs,
-            "maximum_propagation_time": max_prop_time,
-            "time_step": time_step,
-            "max_excess": max_excess,
-            "min_excess": min_excess,
-        },
+        "sampler_kwargs": sampler_kwargs,
         "max_sampled_points": sampled_points,
         "min_new_points": min_new_points,
         "max_excess": max_excess,
         "min_excess": min_excess,
+        "uq_metric": uq_metric,
         "debug": debug,
         "molecule": eq_molecule,
+        "model_predict_kwargs": {
+            "calculate_energy": True,
+            "calculate_energy_gradients": True,
+        },
     }
+    if uq_threshold is not None:
+        base_kwargs["uq_threshold"] = uq_threshold
 
     kwargs_variants: List[Tuple[str, Dict[str, Any]]] = [
+        (
+            "ml_model_main_aux_kwargs",
+            dict(
+                base_kwargs,
+                ml_model="ANI",
+                ml_model_kwargs=model_kwargs,
+                ml_model_aux="ANI",
+                ml_model_aux_kwargs=primary_aux_model_kwargs,
+                committee_size=committee_size,
+            ),
+        ),
+        (
+            "ml_model_uq_kwargs",
+            dict(
+                base_kwargs,
+                ml_model="ANI",
+                ml_model_kwargs=model_kwargs,
+                ml_model_uq="ANI",
+                ml_model_uq_kwargs=primary_aux_model_kwargs,
+                committee_size=committee_size,
+            ),
+        ),
+        (
+            "ml_models_list",
+            dict(
+                base_kwargs,
+                ml_models=["ANI", "ANI"],
+                ml_models_kwargs=[model_kwargs, primary_aux_model_kwargs],
+                committee_size=committee_size,
+            ),
+        ),
         (
             "ml_model_string_with_kwargs",
             dict(base_kwargs, ml_model="ANI", ml_model_kwargs=model_kwargs),
@@ -340,7 +403,43 @@ def _run_ani_al(
     ]
 
     ani_model_obj = _build_ani_model_object(ml, model_file=model_file, device=device)
-    if ani_model_obj is not None:
+    aux_model_objs: List[Any] = []
+    for aux_path in aux_model_files:
+        aux_obj = _build_ani_model_object(ml, model_file=aux_path, device=device)
+        if aux_obj is not None:
+            aux_model_objs.append(aux_obj)
+    if ani_model_obj is not None and aux_model_objs:
+        kwargs_variants.extend(
+            [
+                (
+                    "explicit_main_aux_model_objects",
+                    dict(
+                        base_kwargs,
+                        al_model=ani_model_obj,
+                        aux_model=aux_model_objs[0],
+                        committee_size=committee_size,
+                    ),
+                ),
+                (
+                    "explicit_main_uq_model_objects",
+                    dict(
+                        base_kwargs,
+                        al_model=ani_model_obj,
+                        uq_model=aux_model_objs[0],
+                        committee_size=committee_size,
+                    ),
+                ),
+                (
+                    "explicit_model_list_objects",
+                    dict(
+                        base_kwargs,
+                        al_models=[ani_model_obj, aux_model_objs[0]],
+                        committee_size=committee_size,
+                    ),
+                ),
+            ]
+        )
+    elif ani_model_obj is not None:
         kwargs_variants.append(("explicit_ani_model_object", dict(base_kwargs, al_model=ani_model_obj)))
 
     entrypoints: List[Tuple[str, Any]] = []
@@ -360,6 +459,10 @@ def _run_ani_al(
                     "entrypoint": entrypoint_name,
                     "variant": variant_name,
                     "ani_model_file": str(model_file.resolve()),
+                    "aux_model_files": [str(path.resolve()) for path in aux_model_files],
+                    "committee_size": committee_size,
+                    "uncertainty_metric": uq_metric,
+                    "uq_threshold": uq_threshold,
                     "device": device,
                 }
             except Exception as exc:
@@ -453,7 +556,15 @@ def _build_pbs_script(
     ppn = _require_int(cluster_cfg.get("ppn", 24), "cluster.ppn")
     walltime = str(cluster_cfg.get("walltime", "72:00:00"))
     extra_pbs_lines = _normalize_shell_lines(cluster_cfg.get("extra_pbs_lines"))
-    env_lines = _normalize_shell_lines(cluster_cfg.get("env_blocks", {}).get("default"))
+    env_blocks = cluster_cfg.get("env_blocks", {})
+    if not isinstance(env_blocks, dict):
+        env_blocks = {}
+    env_lines = _normalize_shell_lines(env_blocks.get("default"))
+    if not env_lines:
+        for key in ("train", "training", "md", "labels"):
+            env_lines = _normalize_shell_lines(env_blocks.get(key))
+            if env_lines:
+                break
     if not env_lines:
         env_lines = ["source ~/.bashrc", "conda activate ADL_env"]
     cleanup_lines = _normalize_shell_lines(cluster_cfg.get("cleanup_lines"))
@@ -511,6 +622,7 @@ def _run_local(
     system_cfg = config.get("system", {})
     reference_cfg = config.get("reference", {})
     al_cfg = config.get("active_learning", {})
+    uncertainty_cfg = config.get("uncertainty", {})
     training_cfg = config.get("training", {})
 
     model_type = str(training_cfg.get("ml_model_type", "ANI")).strip().upper()
@@ -544,6 +656,13 @@ def _run_local(
             "time_step": al_cfg.get("time_step", 0.1),
             "label_nthreads": al_cfg.get("label_nthreads", 4),
             "initial_points_refinement": al_cfg.get("initial_points_refinement", "cross-validation"),
+        },
+        "uncertainty": {
+            "committee_size": uncertainty_cfg.get("committee_size", 2),
+            "metric": uncertainty_cfg.get("metric", "energy_forces"),
+            "uq_threshold": uncertainty_cfg.get("uq_threshold"),
+            "energy_weight": uncertainty_cfg.get("energy_weight", 1.0),
+            "force_weight": uncertainty_cfg.get("force_weight", 1.0),
         },
         "training": {"ml_model_type": model_type, "device": training_cfg.get("device", "cuda")},
     }
@@ -582,6 +701,7 @@ def _run_local(
             reference_method=reference_method,
             run_dir=run_dir,
             al_cfg=runtime_config["active_learning"],
+            uncertainty_cfg=runtime_config["uncertainty"],
             sampled_points=sampled_points,
             device=training_cfg.get("device"),
             debug=args.debug,
@@ -605,6 +725,12 @@ def _run_local(
             "al_info_exists": al_info_path.exists(),
             "iteration_history_file": str(history_path.resolve()) if history else None,
             "iteration_history_length": len(history),
+            "uncertainty": {
+                "committee_size": al_meta.get("committee_size"),
+                "metric": al_meta.get("uncertainty_metric"),
+                "uq_threshold": al_meta.get("uq_threshold"),
+                "aux_model_files": al_meta.get("aux_model_files"),
+            },
             "generated_at": _timestamp(),
         }
         _write_json(status_file, status_payload)
@@ -749,7 +875,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="ANI-only H2 AL runner with one-command PBS submission."
     )
-    parser.add_argument("--config", default=str(repo_root / "configs" / "h2_ani_al.yaml"))
+    parser.add_argument("--config", default=str(repo_root / "configs" / "base.yaml"))
     parser.add_argument("--mode", choices=("smoke", "full"), default="smoke")
     parser.add_argument("--submit-mode", choices=("local", "pbs"), default="pbs")
     parser.add_argument("--run-dir", default="")

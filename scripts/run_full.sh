@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python3 scripts/run_h2_al.py \
-  --config configs/h2_ani_al.yaml \
+python scripts/active_learning_loop.py \
+  --config configs/base.yaml \
   --mode full \
-  --submit-mode pbs \
+  --submit-mode-labels pbs \
+  --submit-mode-train pbs \
+  --submit-mode-md pbs \
   --no-wait

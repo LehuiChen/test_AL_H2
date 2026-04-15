@@ -1,0 +1,87 @@
+project:
+  # 项目名称（用于标识本次 AL 复现实验）
+  name: minimal_al_h2_ani
+  description: "H2 ANI active learning (direct-learning, no XTB)"
+
+run:
+  runs_dir: runs
+  name_prefix: h2_ani
+  smoke_name: h2_ani_smoke
+  full_name: h2_ani_full
+
+system:
+  # H2 平衡结构与频率输入
+  xyz: inputs/h2.xyz
+  freq_json: inputs/h2_freq.json
+
+reference:
+  # 参考标注层级：Gaussian(g16) + DFT
+  refmethod: B3LYP/6-31G*
+  qmprog: gaussian
+  nthreads: 8
+
+training:
+  ml_model_type: ANI
+  device: cuda
+
+active_learning:
+  # 教程对齐参数：初始训练点、采样上限、停止阈值
+  init_train_set_size: 5
+  max_sampled_points:
+    smoke: 50
+    full: 1000
+  min_new_points: 5
+  max_excess: 0.25
+  min_excess: 0.20
+  initial_temperature: 300.0
+  maximum_propagation_time: 5.0
+  time_step: 0.1
+  label_nthreads: 4
+  initial_points_refinement: cross-validation
+
+uncertainty:
+  # 主/副模型不确定性配置（committee）
+  committee_size: 2
+  metric: energy_forces
+  uq_threshold: null
+  energy_weight: 1.0
+  force_weight: 1.0
+
+cluster:
+  # PBS 资源与提交命令
+  scheduler: PBS
+  submit_command: qsub
+  python_command: python
+  queue: GPU
+  nodes: 1
+  ppn: 24
+  walltime: 72:00:00
+  poll_interval_seconds: 30
+  poll_timeout_seconds: 172800
+  job_name: h2ani_al
+  extra_pbs_lines: []
+  env_blocks:
+    default:
+      - source ~/.bashrc
+      - conda activate ADL_env
+      - set +e
+      - source /share/apps/gaussian/g16-env.sh
+      - source /share/env/ips2018u1.env
+      - set -e
+      - 'echo "Python path: $(which python3 || which python)"'
+      - 'echo "g16 path: $(which g16 || true)"'
+    labels:
+      - source ~/.bashrc
+      - conda activate ADL_env
+      - set +e
+      - source /share/apps/gaussian/g16-env.sh
+      - source /share/env/ips2018u1.env
+      - set -e
+    train:
+      - source ~/.bashrc
+      - conda activate ADL_env
+      - nvidia-smi || true
+    md:
+      - source ~/.bashrc
+      - conda activate ADL_env
+      - nvidia-smi || true
