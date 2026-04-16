@@ -141,6 +141,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    required_check_names = ["yaml", "mlatom", "pyh5md", "joblib", "sklearn", "torch", "torchani", "g16"]
+    optional_check_names = ["pandas", "matplotlib", "seaborn", "Gau_Mlatom.py"]
     checks: dict[str, Any] = {
         "yaml": check_python_module("yaml"),
         "pandas": check_python_module("pandas"),
@@ -168,6 +170,8 @@ def main() -> None:
         "config_file": str(Path(config["config_path"]).resolve()),
         "python": sys.executable,
         "ml_model_type": str(config.get("training", {}).get("ml_model_type", "ANI")),
+        "required_checks": required_check_names,
+        "optional_checks": optional_check_names,
         "checks": checks,
     }
 
@@ -181,8 +185,7 @@ def main() -> None:
     print(json.dumps(report, indent=2, ensure_ascii=False))
 
     if args.strict:
-        required_keys = ["yaml", "pandas", "matplotlib", "seaborn", "mlatom", "pyh5md", "joblib", "sklearn", "torch", "torchani", "g16"]
-        failed_checks = [key for key in required_keys if not report["checks"].get(key, {}).get("ok", False)]
+        failed_checks = [key for key in required_check_names if not report["checks"].get(key, {}).get("ok", False)]
         if args.test_mlatom_g16 and not report["checks"].get("mlatom_g16_single_point", {}).get("ok", False):
             failed_checks.append("mlatom_g16_single_point")
         if failed_checks:

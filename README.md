@@ -44,6 +44,12 @@
 - `joblib`
 - `scikit-learn`
 
+可选诊断依赖：
+
+- `pandas`
+- `matplotlib`
+- `seaborn`
+
 激活环境：
 
 ```bash
