@@ -16,14 +16,24 @@ source ~/.bashrc
 conda activate ADL_env
 ```
 
-## 3. 检查环境
+## 3. 加载 Gaussian 与相关环境
+
+```bash
+source /share/apps/gaussian/g16-env.sh
+source /share/env/ips2018u1.env
+source ~/.bashrc
+export PATH=/share/apps/gaussian/g16:/share/pubbin:/share/home/Chenlehui/bin:/share/apps/xtb-6.7.1/xtb-dist/bin:$PATH
+export dftd4bin=/share/apps/dftd4-3.5.0/bin/dftd4
+```
+
+## 4. 检查环境
 
 ```bash
 python scripts/check_environment.py --config configs/base.yaml --strict
 python scripts/check_environment.py --config configs/base.yaml --strict --test-mlatom-g16
 ```
 
-## 4. 冒烟运行
+## 5. 冒烟运行
 
 ```bash
 python scripts/active_learning_loop.py \
@@ -33,7 +43,7 @@ python scripts/active_learning_loop.py \
   --submit-mode-md pbs
 ```
 
-## 5. 全量运行
+## 6. 全量运行
 
 ```bash
 python scripts/active_learning_loop.py \
@@ -43,7 +53,7 @@ python scripts/active_learning_loop.py \
   --submit-mode-md pbs
 ```
 
-## 6. 后台挂载
+## 7. 后台挂载
 
 ```bash
 mkdir -p logs
@@ -55,7 +65,7 @@ nohup python scripts/active_learning_loop.py \
   > logs/active_learning.out 2>&1 &
 ```
 
-## 7. 查看状态与验收
+## 8. 查看状态与验收
 
 ```bash
 qstat -u "$USER"
