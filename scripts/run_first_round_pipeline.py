@@ -62,6 +62,13 @@ def run_python_script(command: list[str], *, cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, check=True)
 
 
+def resolve_required_environment_checks(report: dict[str, Any]) -> list[str]:
+    configured = report.get("required_checks")
+    if isinstance(configured, list) and configured:
+        return [str(item) for item in configured]
+    return ["yaml", "mlatom", "pyh5md", "joblib", "sklearn", "torch", "torchani", "g16"]
+
+
 def main() -> None:
     stage_names = [
         "check_environment",
@@ -147,14 +154,21 @@ def main() -> None:
         return manifest_sample_ids(round_000_manifest_path)
 
     def check_environment_complete() -> bool:
-        return bool(safe_read_json(check_environment_report_path).get("checks"))
+        report = safe_read_json(check_environment_report_path)
+        checks = report.get("checks")
+        if not isinstance(checks, dict) or not checks:
+            return False
+        required_names = resolve_required_environment_checks(report)
+        return all(bool(checks.get(name, {}).get("ok", False)) for name in required_names)
 
     def prepare_h2_seed_complete() -> bool:
         summary = safe_read_json(h2_seed_summary_path)
         return h2_seed_json_path.exists() and h2_seed_xyz_path.exists() and summary.get("num_atoms") is not None
 
     def round_000_sampling_complete() -> bool:
-        return bool(round_000_sample_ids())
+        expected_count = int(config.get("sampling", {}).get("initial_conditions_initial", 0))
+        sample_ids = round_000_sample_ids()
+        return bool(sample_ids) and len(sample_ids) == expected_count
 
     def labels_round_000_complete() -> bool:
         sample_ids = round_000_sample_ids()
@@ -167,27 +181,48 @@ def main() -> None:
     def direct_dataset_complete() -> bool:
         metadata = safe_read_json(direct_metadata_path)
         cumulative_ids = manifest_sample_ids(cumulative_manifest_path)
-        return direct_npz_path.exists() and metadata.get("num_samples", 0) >= len(cumulative_ids) > 0
+        return direct_npz_path.exists() and metadata.get("num_samples", 0) == len(cumulative_ids) > 0
 
     def train_main_complete() -> bool:
-        return bool(safe_read_json(train_main_status_path).get("success", False))
+        status = safe_read_json(train_main_status_path)
+        model_file = status.get("main_model_file")
+        return bool(status.get("success", False)) and bool(model_file) and Path(model_file).exists()
 
     def train_aux_complete() -> bool:
-        return bool(safe_read_json(train_aux_status_path).get("success", False))
+        status = safe_read_json(train_aux_status_path)
+        model_file = status.get("aux_model_file")
+        return bool(status.get("success", False)) and bool(model_file) and Path(model_file).exists()
 
     def diagnostics_complete() -> bool:
         diagnostics = safe_read_json(training_diagnostics_path)
         return bool(diagnostics.get("artifacts"))
 
     def md_sampling_complete() -> bool:
-        return bool(safe_read_json(round_001_md_status_path).get("success", False)) and round_001_md_frame_manifest_path.exists()
+        status = safe_read_json(round_001_md_status_path)
+        if not bool(status.get("success", False)) or not round_001_md_frame_manifest_path.exists():
+            return False
+        requested_initial_conditions = int(
+            args.md_num_initial_conditions
+            or config.get("sampling", {}).get("initial_conditions_per_round", 100)
+        )
+        trajectory_mode = str(config.get("sampling", {}).get("md", {}).get("trajectory_mode", "bidirectional")).strip().lower()
+        trajectory_multiplier = 2 if trajectory_mode == "bidirectional" else 1
+        expected_trajectories = requested_initial_conditions * trajectory_multiplier
+        return int(status.get("num_trajectories", -1)) == expected_trajectories
 
     def selection_complete() -> bool:
-        return (
+        if not (
             round_001_selection_summary_path.exists()
             and round_001_selection_manifest_path.exists()
             and active_learning_history_path.exists()
-        )
+        ):
+            return False
+        summary = safe_read_json(round_001_selection_summary_path)
+        if int(summary.get("round_index", -1)) != 1:
+            return False
+        selected_count = int(summary.get("selected_count", -1))
+        manifest_count = len(load_manifest(round_001_selection_manifest_path))
+        return selected_count == manifest_count
 
     def run_labels_round_000() -> dict[str, Any]:
         try:

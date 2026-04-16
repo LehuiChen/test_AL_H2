@@ -52,6 +52,13 @@ python scripts/active_learning_loop.py \
   --submit-mode-md pbs
 ```
 
+如果前面已经跑过 `configs/base_smoke.yaml`，建议先重新拉一个干净仓库，或者清理以下目录后再跑 full：
+
+```bash
+rm -rf results models labels/gaussian data/raw data/processed
+mkdir -p results models labels/gaussian data/raw data/processed logs
+```
+
 ## 6. 后台挂载
 
 ```bash

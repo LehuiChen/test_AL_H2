@@ -118,6 +118,13 @@ python scripts/active_learning_loop.py \
   --submit-mode-md pbs
 ```
 
+如果你已经跑过 `smoke`，再切到 `full` 时建议二选一：
+
+- 重新拉一个干净仓库再跑
+- 或先清理 `results/ models/ labels/gaussian/ data/raw/ data/processed/` 后再跑
+
+这样可以避免旧轮次产物和新配置混用。
+
 也可以直接用包装脚本：
 
 ```bash
