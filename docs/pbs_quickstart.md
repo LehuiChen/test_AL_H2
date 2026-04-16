@@ -9,31 +9,30 @@ git clone https://github.com/LehuiChen/test_AL_H2.git
 cd test_AL_H2
 ```
 
-## 2. 激活环境
-
-```bash
-source ~/.bashrc
-conda activate ADL_env
-```
-
-## 3. 加载 Gaussian 与相关环境
+## 2. 初始化交互式运行环境
 
 ```bash
 source /share/apps/gaussian/g16-env.sh
 source /share/env/ips2018u1.env
 source ~/.bashrc
+conda activate ADL_env
 export PATH=/share/apps/gaussian/g16:/share/pubbin:/share/home/Chenlehui/bin:/share/apps/xtb-6.7.1/xtb-dist/bin:$PATH
 export dftd4bin=/share/apps/dftd4-3.5.0/bin/dftd4
 ```
 
-## 4. 检查环境
+说明：
+
+- 这段是给你在登录节点手动检查环境、手动启动主控器时使用的。
+- PBS 里的 `target` 标注作业也已经在配置文件里内置了同一套 Gaussian 环境块。
+
+## 3. 检查环境
 
 ```bash
 python scripts/check_environment.py --config configs/base.yaml --strict
 python scripts/check_environment.py --config configs/base.yaml --strict --test-mlatom-g16
 ```
 
-## 5. 冒烟运行
+## 4. 冒烟运行
 
 ```bash
 python scripts/active_learning_loop.py \
@@ -43,7 +42,7 @@ python scripts/active_learning_loop.py \
   --submit-mode-md pbs
 ```
 
-## 6. 全量运行
+## 5. 全量运行
 
 ```bash
 python scripts/active_learning_loop.py \
@@ -53,7 +52,7 @@ python scripts/active_learning_loop.py \
   --submit-mode-md pbs
 ```
 
-## 7. 后台挂载
+## 6. 后台挂载
 
 ```bash
 mkdir -p logs
@@ -65,7 +64,7 @@ nohup python scripts/active_learning_loop.py \
   > logs/active_learning.out 2>&1 &
 ```
 
-## 8. 查看状态与验收
+## 7. 查看状态与验收
 
 ```bash
 qstat -u "$USER"
