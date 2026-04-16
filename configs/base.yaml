@@ -1,87 +1,158 @@
-project:
-  # 项目名称（用于标识本次 AL 复现实验）
-  name: minimal_al_h2_ani
-  description: "H2 ANI active learning (direct-learning, no XTB)"
+﻿project:
+  name: test_AL_H2
+  description: "H2 直接学习 ANI active learning，多阶段 PBS 协调器版本"
 
-run:
-  runs_dir: runs
-  name_prefix: h2_ani
-  smoke_name: h2_ani_smoke
-  full_name: h2_ani_full
+paths:
+  h2_xyz_source: inputs/h2.xyz
+  h2_frequency_source: inputs/h2_freq.json
+  h2_seed_json: data/processed/h2_seed.json
+  h2_seed_xyz: data/processed/h2_seed.xyz
+  h2_seed_summary_file: results/h2_seed_summary.json
+  cumulative_labeled_manifest: data/processed/cumulative_labeled_manifest.json
+  direct_dataset_npz: data/processed/direct_dataset.npz
+  direct_dataset_metadata: data/processed/direct_dataset_metadata.json
+  gaussian_labels_dir: labels/gaussian
+  models_dir: models
+  logs_dir: logs
+  results_dir: results
+  training_split_file: models/training_split.json
+  train_main_predictions_file: models/train_main_predictions.csv
+  train_aux_predictions_file: models/train_aux_predictions.csv
+  train_main_history_file: models/train_main_history.json
+  train_aux_history_file: models/train_aux_history.json
+  training_diagnostics_file: models/training_diagnostics.json
+  check_environment_report: results/check_environment_latest.json
+  pipeline_run_summary: results/pipeline_run_summary.json
+  active_learning_round_history_file: results/active_learning_round_history.json
 
-system:
-  # H2 平衡结构与频率输入
-  xyz: inputs/h2.xyz
-  freq_json: inputs/h2_freq.json
+methods:
+  target:
+    label: target
+    output_subdir: gaussian
+    method: B3LYP/6-31G*
+    program: Gaussian
+    nthreads: 8
+    save_files_in_current_directory: false
 
-reference:
-  # 参考标注层级：Gaussian(g16) + DFT
-  refmethod: B3LYP/6-31G*
-  qmprog: gaussian
-  nthreads: 8
+sampling:
+  initial_condition_sampler: harmonic-quantum-boltzmann
+  initial_temperature: 298
+  use_hessian: false
+  reaction_coordinate_momentum: false
+  initial_conditions_initial: 200
+  initial_conditions_per_round: 100
+  dedup_rmsd_threshold: 0.05
+  random_seed: 20260416
+  md:
+    trajectory_mode: bidirectional
+    maximum_propagation_time: 150
+    time_step: 0.5
+    save_interval_steps: 5
+    ensemble: NVE
 
 training:
   ml_model_type: ANI
   device: cuda
+  validation_set_fraction: 0.10
+  model_name: direct_bundle
+  main_model_stem: direct_main_model
+  aux_model_stem: direct_aux_model
+  summary_filename: training_summary.json
+  state_filename: training_state.json
 
 active_learning:
-  # 教程对齐参数：初始训练点、采样上限、停止阈值
-  init_train_set_size: 5
-  max_sampled_points:
-    smoke: 50
-    full: 1000
+  max_rounds: 20
   min_new_points: 5
-  max_excess: 0.25
-  min_excess: 0.20
-  initial_temperature: 300.0
-  maximum_propagation_time: 5.0
-  time_step: 0.1
-  label_nthreads: 4
-  initial_points_refinement: cross-validation
+  max_new_points_per_round: null
+  threshold_metric: m+3mad
+  convergence_ratio: 0.05
 
 uncertainty:
-  # 主/副模型不确定性配置（committee）
   committee_size: 2
-  metric: energy_forces
-  uq_threshold: null
-  energy_weight: 1.0
-  force_weight: 1.0
+  threshold_metric: m+3mad
+  uncertainty_threshold: null
+  disagreement_metric: energy
 
 cluster:
-  # PBS 资源与提交命令
   scheduler: PBS
   submit_command: qsub
-  python_command: python
-  queue: GPU
+  queue: default
   nodes: 1
-  ppn: 24
-  walltime: 72:00:00
+  ppn: 16
+  walltime: 360:00:00
+  conda_init: source ~/.bashrc
+  conda_env: ADL_env
+  python_command: python
   poll_interval_seconds: 30
-  poll_timeout_seconds: 172800
-  job_name: h2ani_al
-  extra_pbs_lines: []
+  poll_timeout_seconds: 1296000
+  resources_by_method:
+    target:
+      submission_strategy: worker
+      queue: default
+      nodes: 1
+      ppn: 16
+      walltime: 360:00:00
+      worker_count: 4
+      local_parallelism: 2
+      extra_pbs_lines: []
+    training:
+      queue: GPU
+      nodes: 1
+      ppn: 24
+      walltime: 360:00:00
+      extra_pbs_lines: []
+    uncertainty:
+      queue: GPU
+      nodes: 1
+      ppn: 24
+      walltime: 360:00:00
+      extra_pbs_lines: []
+    md_sampling:
+      queue: GPU
+      nodes: 1
+      ppn: 24
+      walltime: 360:00:00
+      extra_pbs_lines: []
   env_blocks:
-    default:
-      - source ~/.bashrc
-      - conda activate ADL_env
+    target:
+      - export PERLLIB="${PERLLIB-}"
       - set +e
+      - set +u
+      - set +o pipefail
       - source /share/apps/gaussian/g16-env.sh
+      - g16_env_rc=$?
       - source /share/env/ips2018u1.env
+      - ips_env_rc=$?
       - set -e
-      - 'echo "Python path: $(which python3 || which python)"'
-      - 'echo "g16 path: $(which g16 || true)"'
-    labels:
+      - set -u
+      - set -o pipefail
       - source ~/.bashrc
       - conda activate ADL_env
-      - set +e
-      - source /share/apps/gaussian/g16-env.sh
-      - source /share/env/ips2018u1.env
-      - set -e
-    train:
+      - export PATH=/share/apps/gaussian/g16:/share/pubbin:/share/home/Chenlehui/bin:/share/apps/xtb-6.7.1/xtb-dist/bin:$PATH
+      - export dftd4bin=/share/apps/dftd4-3.5.0/bin/dftd4
+      - export GAUSS_SCRDIR=/tmp/${USER:-${LOGNAME:-unknown_user}}/${PBS_JOBID:-unknown_job}
+      - mkdir -p "$GAUSS_SCRDIR"
+      - 'echo "g16-env.sh return code: ${g16_env_rc:-0}"'
+      - 'echo "ips2018u1.env return code: ${ips_env_rc:-0}"'
+      - 'command -v g16 >/dev/null || { echo "g16 not found after sourcing Gaussian env" >&2; exit 1; }'
+      - '[ -n "${GAUSS_EXEDIR:-}" ] || { echo "GAUSS_EXEDIR is not set after sourcing Gaussian env" >&2; exit 1; }'
+      - 'echo "Python path: $(which python)"'
+      - 'echo "GAUSS_SCRDIR: $GAUSS_SCRDIR"'
+    training:
       - source ~/.bashrc
       - conda activate ADL_env
+      - 'echo "Python path: $(which python)"'
       - nvidia-smi || true
-    md:
+    uncertainty:
       - source ~/.bashrc
       - conda activate ADL_env
+      - 'echo "Python path: $(which python)"'
       - nvidia-smi || true
+    md_sampling:
+      - source ~/.bashrc
+      - conda activate ADL_env
+      - 'echo "Python path: $(which python)"'
+      - nvidia-smi || true
+  cleanup_blocks:
+    target:
+      - if [ -n "${GAUSS_SCRDIR:-}" ] && [ "$GAUSS_SCRDIR" != "/" ] && [ "$GAUSS_SCRDIR" != "/tmp" ] && [ "$GAUSS_SCRDIR" != "/tmp/" ] && [ -d "$GAUSS_SCRDIR" ]; then rm -rf "$GAUSS_SCRDIR"; fi

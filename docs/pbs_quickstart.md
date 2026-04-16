@@ -1,4 +1,4 @@
-# PBS 快速运行清单
+﻿# PBS 快速运行清单
 
 ## 1. 拉取代码
 
@@ -16,41 +16,48 @@ source ~/.bashrc
 conda activate ADL_env
 ```
 
-## 3. 环境检测
+## 3. 检查环境
 
 ```bash
 python scripts/check_environment.py --config configs/base.yaml --strict
 python scripts/check_environment.py --config configs/base.yaml --strict --test-mlatom-g16
 ```
 
-## 4. 提交冒烟任务
+## 4. 冒烟运行
 
 ```bash
 python scripts/active_learning_loop.py \
   --config configs/base_smoke.yaml \
-  --mode smoke \
   --submit-mode-labels pbs \
   --submit-mode-train pbs \
-  --submit-mode-md pbs \
-  --no-wait
+  --submit-mode-md pbs
 ```
 
-## 5. 提交完整任务
+## 5. 全量运行
 
 ```bash
 python scripts/active_learning_loop.py \
   --config configs/base.yaml \
-  --mode full \
+  --submit-mode-labels pbs \
+  --submit-mode-train pbs \
+  --submit-mode-md pbs
+```
+
+## 6. 后台挂载
+
+```bash
+mkdir -p logs
+nohup python scripts/active_learning_loop.py \
+  --config configs/base.yaml \
   --submit-mode-labels pbs \
   --submit-mode-train pbs \
   --submit-mode-md pbs \
-  --no-wait
+  > logs/active_learning.out 2>&1 &
 ```
 
-## 6. 监控与验收
+## 7. 查看状态与验收
 
 ```bash
 qstat -u "$USER"
-python scripts/inspect_al_results.py --run-dir runs/h2_ani_smoke --min-new-points 5
-python scripts/inspect_al_results.py --run-dir runs/h2_ani_full --min-new-points 5
+python scripts/inspect_al_results.py --results-dir results --min-new-points 5
 ```

@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-"""Inspect ANI H2 AL outputs with al_info.json-first logic."""
-
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -19,81 +17,16 @@ def _load_json(path: pathlib.Path) -> Optional[Any]:
         return None
 
 
-def _find_lists_of_dicts(obj: Any) -> List[List[Dict[str, Any]]]:
-    found: List[List[Dict[str, Any]]] = []
-    if isinstance(obj, list):
-        if obj and all(isinstance(item, dict) for item in obj):
-            found.append(obj)
-        for item in obj:
-            found.extend(_find_lists_of_dicts(item))
-    elif isinstance(obj, dict):
-        for value in obj.values():
-            found.extend(_find_lists_of_dicts(value))
-    return found
-
-
-def _coerce_int(value: Any) -> Optional[int]:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except Exception:
-        return None
-
-
-def _extract_new_points(record: Dict[str, Any]) -> Optional[int]:
-    for key in (
-        "new_points",
-        "n_new_points",
-        "num_new_points",
-        "number_of_new_points",
-        "selected_count",
-        "selected_points",
-    ):
-        if key in record:
-            return _coerce_int(record.get(key))
-    return None
-
-
-def _extract_history_from_al_info(al_info_obj: Any) -> List[Dict[str, Any]]:
-    candidates = _find_lists_of_dicts(al_info_obj)
-    if not candidates:
-        return []
-
-    def score(items: List[Dict[str, Any]]) -> Tuple[int, int]:
-        has_new_points = sum(1 for item in items if _extract_new_points(item) is not None)
-        return has_new_points, len(items)
-
-    best = sorted(candidates, key=score, reverse=True)[0]
-    history: List[Dict[str, Any]] = []
-    for index, item in enumerate(best, start=1):
-        cycle = (
-            _coerce_int(item.get("cycle"))
-            or _coerce_int(item.get("iteration"))
-            or _coerce_int(item.get("round"))
-            or index
-        )
-        history.append(
-            {
-                "cycle": cycle,
-                "new_points": _extract_new_points(item),
-                "uq_threshold": item.get("uq_threshold"),
-                "excess": item.get("excess"),
-            }
-        )
-    return history
-
-
-def _write_curve_csv(history: List[Dict[str, Any]], target: pathlib.Path) -> None:
-    lines = ["cycle,new_points,uq_threshold,excess"]
-    for item in history:
+def _write_curve_csv(rounds: List[Dict[str, Any]], target: pathlib.Path) -> None:
+    lines = ["round_index,selected_count,uncertain_ratio,converged"]
+    for item in rounds:
         lines.append(
             "%s,%s,%s,%s"
             % (
-                item.get("cycle", ""),
-                item.get("new_points", ""),
-                item.get("uq_threshold", ""),
-                item.get("excess", ""),
+                item.get("round_index", ""),
+                item.get("selected_count", ""),
+                item.get("uncertain_ratio", ""),
+                item.get("converged", ""),
             )
         )
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -110,48 +43,51 @@ def _trend_label(values: List[int]) -> str:
 
 
 def _evaluate_acceptance(
-    run_dir: pathlib.Path,
-    history: List[Dict[str, Any]],
+    *,
+    results_dir: pathlib.Path,
+    experiment_obj: Optional[Dict[str, Any]],
+    history_obj: Optional[Dict[str, Any]],
     min_new_points: int,
-    status_obj: Optional[Dict[str, Any]],
 ) -> Tuple[bool, List[str]]:
     checks: List[str] = []
     ok = True
 
-    al_info_path = run_dir / "al_info.json"
-    if al_info_path.exists():
-        checks.append("PASS: al_info.json exists.")
+    experiment_path = results_dir / "active_learning_experiment_summary.json"
+    if experiment_path.exists():
+        checks.append("PASS: active_learning_experiment_summary.json exists.")
     else:
-        checks.append("FAIL: al_info.json is missing.")
+        checks.append("FAIL: active_learning_experiment_summary.json is missing.")
         ok = False
 
-    if status_obj is not None:
-        if bool(status_obj.get("success", False)):
-            checks.append("PASS: status.json reports success.")
+    if isinstance(experiment_obj, dict):
+        if bool(experiment_obj.get("success", False)):
+            checks.append("PASS: experiment summary reports success.")
         else:
-            checks.append("FAIL: status.json reports failure.")
-            ok = False
+            checks.append("WARN: experiment summary does not report success yet.")
 
-    if not history:
-        checks.append("WARN: iteration history not found in al_info/history files.")
-        return ok, checks
+    rounds = []
+    if isinstance(history_obj, dict):
+        rounds = history_obj.get("rounds", []) or []
+    if not rounds:
+        checks.append("FAIL: active_learning_round_history.json has no rounds.")
+        return False, checks
 
-    new_points = [int(item["new_points"]) for item in history if isinstance(item.get("new_points"), int)]
-    if not new_points:
-        checks.append("WARN: history exists but no parseable new_points values.")
-        return ok, checks
+    selected_counts = [int(item["selected_count"]) for item in rounds if isinstance(item.get("selected_count"), int)]
+    if not selected_counts:
+        checks.append("FAIL: cannot parse selected_count from round history.")
+        return False, checks
 
-    trend = _trend_label(new_points)
-    checks.append("INFO: new_points trend is %s (%s)." % (trend, new_points))
-    if new_points[-1] < min_new_points:
+    checks.append(f"INFO: selected_count trend is {_trend_label(selected_counts)} ({selected_counts}).")
+    last_round = rounds[-1]
+    if bool(last_round.get("converged", False)) or selected_counts[-1] < min_new_points:
         checks.append(
-            "PASS: stop condition reached (last new_points=%d < min_new_points=%d)."
-            % (new_points[-1], min_new_points)
+            "PASS: stop condition reached (converged=%s, last selected_count=%d, min_new_points=%d)."
+            % (bool(last_round.get("converged", False)), selected_counts[-1], min_new_points)
         )
     else:
         checks.append(
-            "FAIL: stop condition not reached (last new_points=%d, min_new_points=%d)."
-            % (new_points[-1], min_new_points)
+            "FAIL: stop condition not reached (converged=%s, last selected_count=%d, min_new_points=%d)."
+            % (bool(last_round.get("converged", False)), selected_counts[-1], min_new_points)
         )
         ok = False
 
@@ -159,45 +95,38 @@ def _evaluate_acceptance(
 
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Inspect ANI H2 AL run results.")
-    parser.add_argument("--run-dir", required=True)
+    parser = argparse.ArgumentParser(description="Inspect H2 AL results under results/.")
+    parser.add_argument("--results-dir", default="results")
+    parser.add_argument("--run-dir", default="", help="兼容旧参数；如果传入则等同 results-dir。")
     parser.add_argument("--min-new-points", type=int, default=5)
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(list(argv or []))
-    run_dir = pathlib.Path(args.run_dir).resolve()
+    base_dir = pathlib.Path(args.run_dir or args.results_dir).resolve()
 
-    al_info_path = run_dir / "al_info.json"
-    history_path = run_dir / "al_iteration_history.json"
-    status_path = run_dir / "status.json"
+    experiment_path = base_dir / "active_learning_experiment_summary.json"
+    history_path = base_dir / "active_learning_round_history.json"
+    experiment_obj_raw = _load_json(experiment_path)
+    history_obj_raw = _load_json(history_path)
+    experiment_obj = experiment_obj_raw if isinstance(experiment_obj_raw, dict) else None
+    history_obj = history_obj_raw if isinstance(history_obj_raw, dict) else None
+    rounds = history_obj.get("rounds", []) if history_obj else []
 
-    al_info_obj = _load_json(al_info_path)
-    history_obj = _load_json(history_path)
-    status_obj_raw = _load_json(status_path)
-    status_obj = status_obj_raw if isinstance(status_obj_raw, dict) else None
+    curve_csv = base_dir / "new_points_curve.csv"
+    _write_curve_csv(rounds, curve_csv)
 
-    history: List[Dict[str, Any]] = []
-    if isinstance(history_obj, list) and all(isinstance(item, dict) for item in history_obj):
-        history = history_obj
-    elif al_info_obj is not None:
-        history = _extract_history_from_al_info(al_info_obj)
-
-    curve_csv = run_dir / "new_points_curve.csv"
-    _write_curve_csv(history, curve_csv)
-
-    print("Run directory:", run_dir)
-    print("AL info file:", al_info_path)
-    print("Status file:", status_path)
-    print("History file:", history_path)
+    print("Results directory:", base_dir)
+    print("Experiment summary:", experiment_path)
+    print("Round history:", history_path)
     print("Curve CSV:", curve_csv)
 
     ok, checks = _evaluate_acceptance(
-        run_dir=run_dir,
-        history=history,
+        results_dir=base_dir,
+        experiment_obj=experiment_obj,
+        history_obj=history_obj,
         min_new_points=args.min_new_points,
-        status_obj=status_obj,
     )
     for line in checks:
         print(line)
@@ -206,4 +135,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

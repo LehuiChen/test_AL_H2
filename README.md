@@ -1,70 +1,76 @@
-# test_AL_H2
+﻿# test_AL_H2
 
-本仓库用于复现 H2 的主动学习（AL）流程，接口风格与 `minimal_adl_ethene_butadiene_ANI` 保持一致：
+这个仓库按 `minimal_adl_ethene_butadiene_ANI` 的骨架组织，但算法语义改成了 H2 的直接学习主动学习。
 
-- 直接学习（不走 delta 管线）
-- 训练后端固定 ANI
-- 参考标注使用 Gaussian `g16`
-- 支持 PBS 一键提交
+当前唯一入口：
 
-## 1. 服务器拉取仓库
+- `python scripts/active_learning_loop.py --config ... --submit-mode-labels pbs --submit-mode-train pbs --submit-mode-md pbs`
 
-```bash
-mkdir -p /share/home/Chenlehui/work
-cd /share/home/Chenlehui/work
-git clone https://github.com/LehuiChen/test_AL_H2.git
-cd test_AL_H2
-```
+当前工作流特征：
 
-## 2. 环境要求（ADL_env）
+- 标注只走 Gaussian `g16` + `B3LYP/6-31G*`
+- 训练后端固定为 ANI
+- 不构造 delta 数据集
+- 不依赖 xtb 参与学习或标注
+- 不确定性采用主模型 / 副模型的 energy disagreement
 
-建议运行环境：`ADL_env`
+## 目录结构
 
-必须可用：
+核心产物目录与参考 ADL 仓库保持同构：
+
+- `configs/`：配置文件
+- `inputs/`：H2 输入，仅保留 `h2.xyz` 和 `h2_freq.json`
+- `data/raw/`：采样与筛选后的原始几何
+- `data/processed/`：累计 manifest 与训练数据集
+- `labels/gaussian/`：Gaussian 标注结果
+- `models/`：主模型、副模型、训练诊断
+- `results/`：轮次选择汇总、实验总汇总、环境检测报告
+- `scripts/`：多阶段调度器与阶段脚本
+- `src/minimal_adl/`：对齐参考 ADL 写法的最小实现模块
+
+## 环境要求
+
+推荐环境：`ADL_env`
+
+关键依赖：
 
 - `python`
+- `PyYAML`
 - `mlatom`
 - `torch`
 - `torchani`
 - `g16`
+- `pyh5md`
+- `joblib`
+- `scikit-learn`
 
-可选：
-
-- `xtb` 可以存在，但本流程不依赖 `xtb` 参与学习或标注。
-
-环境激活：
+激活环境：
 
 ```bash
 source ~/.bashrc
 conda activate ADL_env
 ```
 
-## 3. 配置文件说明
+## 配置说明
 
-主要配置：
+全量配置：`configs/base.yaml`
 
-- `configs/base_smoke.yaml`：冒烟配置
-- `configs/base.yaml`：完整配置
+冒烟配置：`configs/base_smoke.yaml`
 
-常用可改项：
+当前资源分层与参考 ADL 对齐：
 
-- `cluster.queue/nodes/ppn/walltime`
-- `cluster.submit_command/cluster.python_command`
-- `cluster.env_blocks.default`（按你集群环境加载 g16）
-- `reference.refmethod/reference.qmprog`
-- `active_learning.*`
-- `uncertainty.*`
+- `target`：`queue=default`，`ppn=16`，`worker_count=4`，`walltime=360:00:00`
+- `training`：`queue=GPU`，`ppn=24`，`walltime=360:00:00`
+- `uncertainty`：`queue=GPU`，`ppn=24`，`walltime=360:00:00`
+- `md_sampling`：`queue=GPU`，`ppn=24`，`walltime=360:00:00`
 
-主副模型不确定性配置示例：
+Gaussian 环境块也按参考 ADL 的写法保留了：
 
-```yaml
-uncertainty:
-  committee_size: 2
-  metric: energy_forces
-  uq_threshold: null
-```
+- `PERLLIB` 保护
+- `set +u` / `set +o pipefail`
+- `GAUSS_SCRDIR` 创建与退出清理
 
-## 4. 环境检测
+## 环境检测
 
 严格检测：
 
@@ -72,70 +78,103 @@ uncertainty:
 python scripts/check_environment.py --config configs/base.yaml --strict
 ```
 
-可选 g16 + MLatom 单点测试：
+加一轮最小 `mlatom + g16` 单点测试：
 
 ```bash
 python scripts/check_environment.py --config configs/base.yaml --strict --test-mlatom-g16
 ```
 
-ADL 兼容参数（保留接口）：
+兼容旧命令的 `xtb` 开关还保留，但这里只是 no-op：
 
 ```bash
 python scripts/check_environment.py --config configs/base.yaml --strict --test-mlatom-xtb
 ```
 
-说明：`--test-mlatom-xtb` 在本项目中会被接受，但不会执行 xtb 测试。
+## 一键运行
 
-## 5. 一键运行 AL
+冒烟：
 
-主命令（ADL 风格）：
+```bash
+python scripts/active_learning_loop.py \
+  --config configs/base_smoke.yaml \
+  --submit-mode-labels pbs \
+  --submit-mode-train pbs \
+  --submit-mode-md pbs
+```
+
+全量：
 
 ```bash
 python scripts/active_learning_loop.py \
   --config configs/base.yaml \
   --submit-mode-labels pbs \
   --submit-mode-train pbs \
-  --submit-mode-md pbs \
-  --no-wait
+  --submit-mode-md pbs
 ```
 
-快捷脚本：
+也可以直接用包装脚本：
 
 ```bash
 bash scripts/run_smoke.sh
 bash scripts/run_full.sh
 ```
 
-## 6. 作业监控与结果验收
+## 后台挂载运行
 
-查看队列：
+这套主控器是阻塞式协调器。要后台挂着跑，就用外层 shell 管理，而不是让 Python 主程序立即返回。
+
+推荐 `nohup`：
+
+```bash
+mkdir -p logs
+nohup python scripts/active_learning_loop.py \
+  --config configs/base.yaml \
+  --submit-mode-labels pbs \
+  --submit-mode-train pbs \
+  --submit-mode-md pbs \
+  > logs/active_learning.out 2>&1 &
+```
+
+然后查看后台 PID：
+
+```bash
+jobs -l
+ps -fu "$USER" | grep active_learning_loop.py
+```
+
+如果你更习惯会话保活，也可以用 `screen` 或 `tmux`。
+
+## 结果查看
+
+重点文件：
+
+- `results/check_environment_latest.json`
+- `results/pipeline_run_summary.json`
+- `results/active_learning_experiment_summary.json`
+- `results/active_learning_round_history.json`
+- `results/round_*_selection_summary.json`
+- `results/round_*_selected_manifest.json`
+- `models/training_diagnostics.json`
+
+快速验收：
+
+```bash
+python scripts/inspect_al_results.py --results-dir results --min-new-points 5
+```
+
+查看 PBS：
 
 ```bash
 qstat -u "$USER"
 ```
 
-输出目录（`runs/h2_ani_smoke` 或 `runs/h2_ani_full`）重点文件：
+## 论文与方法对齐
 
-- `submission.json`（含 `job_id`）
-- `status.json`
-- `run_config.json`
-- `al_info.json`
-- `active_learning_experiment_summary.json`
+仓库内论文：
 
-结果检查：
+- `physics-informed-active-learning-for-accelerating-quantum-chemical-simulations.pdf`
 
-```bash
-python scripts/inspect_al_results.py --run-dir runs/h2_ani_smoke --min-new-points 5
-python scripts/inspect_al_results.py --run-dir runs/h2_ani_full --min-new-points 5
-```
+补充说明：
 
-## 7. 论文与方法对齐
-
-- 仓库论文 PDF：
-  `physics-informed-active-learning-for-accelerating-quantum-chemical-simulations.pdf`
-- DOI：
-  `10.1021/acs.jctc.4c00821`
-- 方法对齐说明：
-  `docs/h2_al_paper_alignment.md`
-- PBS 快速清单：
-  `docs/pbs_quickstart.md`
+- `docs/h2_al_paper_alignment.md`
+- `docs/pbs_quickstart.md`

@@ -1,34 +1,44 @@
-# 教程流程与论文方法对齐说明
+﻿# H2 教程与论文对齐
 
-本说明将 H2 教程复现流程映射到论文中的主动学习闭环：
+## 核心映射
 
-- Hou et al., *J. Chem. Theory Comput.* 2024, 20, 7744-7754
-- DOI: `10.1021/acs.jctc.4c00821`
+当前仓库把 H2 最小案例放进了参考 ADL 仓库的同构骨架里。阶段映射如下：
 
-## 闭环步骤映射
+1. `prepare_h2_seed`
+   作用：把 `inputs/h2.xyz + inputs/h2_freq.json` 整理成统一 seed。
+2. `sample_round_000_initial_conditions`
+   作用：从 H2 seed 采样首轮初始条件。
+3. `labels_round_000`
+   作用：用 Gaussian `B3LYP/6-31G*` 做目标标注。
+4. `build_training_dataset`
+   作用：只用 Gaussian 标注构造直接学习数据集。
+5. `train_main_model` + `train_aux_model`
+   作用：训练主模型和副模型，副模型只学能量，用于分歧不确定性。
+6. `run_md_sampling_round_*`
+   作用：用主/副模型进行 MD 采样，在首个不确定点停止轨迹。
+7. `select_round_*_frames`
+   作用：按主副模型分歧筛出下一轮需要补标的点。
+8. `active_learning_loop`
+   作用：串起所有轮次，直到 `converged` 或 `selected_count < min_new_points`。
 
-1. 采样（Sampling）
-- 教程复现：以平衡结构和频率为起点，做 Wigner 初始条件采样（`inputs/h2_freq.json`）。
-- 论文思想：物理启发采样，优先探索化学相关区域。
+## 和原论文/教程的关系
 
-2. 不确定性评估（UQ）
-- 当前实现：保留主/副模型（committee）配置，按模型分歧触发标注；阈值行为由 `uncertainty.*` 与 `max_excess/min_excess` 控制。
-- 论文思想：基于不确定性选择高价值样本，减少昂贵量化标注次数。
+教程里的 H2 案例强调的是一个最小 AL 闭环：
 
-3. 触发标注（Query + Label）
-- 当前实现：不确定性高的点交给参考方法标注，默认 `B3LYP/6-31G* + Gaussian(g16)`。
-- 论文思想：只在低置信区域调用高精度电子结构计算。
+- 采样
+- 不确定性评估
+- 触发标注
+- 增量重训
+- 收敛停止
 
-4. 增量重训（Incremental Retraining）
-- 当前实现：新增标注并入训练后重训 ANI 模型，迭代历史写入 `al_info.json` 和派生汇总文件。
-- 论文思想：通过信息增量数据逐轮提升势能面模型质量。
+论文把同样的思想推广到更复杂体系，并量化了加速收益。当前仓库保留了这条方法链，只把参考体系缩到 H2，并把参考 ADL 仓库中的直接学习语义落实到这套 PBS 多阶段框架里。
 
-5. 收敛停止（Convergence）
-- 当前实现：新增点数量降到阈值以下（`new_points < min_new_points`）停止。
-- 论文思想：当大部分采样点置信度足够高时停止迭代。
+## 当前不确定性定义
 
-## 验收信号
+这里不再依赖差值学习，而是：
 
-- `al_info.json` 存在且可解析。
-- `status.json.success=true`（或本地模式流程正常结束）。
-- 新增点数量随轮次整体下降并触发停止条件。
+- 主模型：学习 energy + force
+- 副模型：学习 energy
+- 不确定性：`|E_main - E_aux|`
+
+这和教程示例里的“主/副模型分歧触发标注”是一致的，只是具体实现落在参考 ADL 的多阶段 PBS 框架里。
